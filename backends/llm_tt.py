@@ -16,7 +16,7 @@ class ResponderTenstorrent:
         json_payload = json.loads("{\"team_id\": \"tenstorrent\", \"token_id\": \"debug-test\"}")
         openai_api_key = jwt.encode(json_payload, jwt_secret, algorithm="HS256")
         self.client = OpenAI(
-            base_url="http://localhost:8000/v1",
+            base_url=base_url,
             api_key=openai_api_key,
         )
 

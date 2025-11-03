@@ -43,9 +43,9 @@ def play_ready_sound(frequency=800, duration=0.2, volume=0.3):
 def build_pipeline(mode="cpu"):
     print("Initializing QuietBox pipeline...")
     # Swap these two lines later to TT backends once ready
-    if mode == "cpu-rest_tt-llm":
+    if mode == "cpu-rest_tt-whisper-llm":
         print("Loading Whisper model (STT)...")
-        stt = STTWhisperCPU(model_size="small")
+        stt = STTTenstorrent()
         print("Loading Llama-3.1-8B-Instruct model (LLM)...")
         llm = ResponderTenstorrent(model_name="meta-llama/Llama-3.1-8B-Instruct")
     elif mode == "cpu":
@@ -349,4 +349,4 @@ if __name__ == "__main__":
     import os
     os.environ["QUIETBOX_VOICE"] = selected_voice
     
-    run_loop(mode="cpu-rest_tt-llm", use_wake_word=use_wake_word)
+    run_loop(mode="cpu-rest_tt-whisper-llm", use_wake_word=use_wake_word)
