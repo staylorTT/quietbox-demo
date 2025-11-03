@@ -1,8 +1,12 @@
-from backends.wakeword_open import WakeWordDetector
+# Wake word detector - using Whisper-based detection
+from backends.wakeword_whisper import WakeWordDetector
+# Alternative: from backends.wakeword_open import WakeWordDetector
 from backends.record_vad import Recorder
 from backends.stt_whisper_cpu import STTWhisperCPU
 from backends.llm_hf_cpu import ResponderHFCPU
 from backends.tts_pyttsx3 import TTSLocal
+from backends.interruptible_tts import InterruptibleTTS
+from backends.speech_monitor import SpeechMonitor
 from datetime import datetime
 import os
 import numpy as np
@@ -69,12 +73,17 @@ def build_pipeline(mode="cpu"):
     
     try:
         from backends.tts_coqui import TTSLocal as TTSCoqui
-        tts = TTSCoqui(voice=selected_voice, use_gpu=False)
+        base_tts = TTSCoqui(voice=selected_voice, use_gpu=False)
         voice_name = selected_voice.split("/")[-1]
         print(f"[INFO] Using Coqui TTS (neural voice: {voice_name}) for natural speech")
+        # Wrap with interruptible TTS
+        tts = InterruptibleTTS(base_tts)
+        print(f"[INFO] TTS interruption enabled - speak during responses to interrupt")
     except Exception as e:
         print(f"[INFO] Coqui TTS not available ({e}), using pyttsx3")
-        tts = TTSLocal()
+        base_tts = TTSLocal()
+        # Still wrap for consistency (though pyttsx3 interruption is limited)
+        tts = InterruptibleTTS(base_tts)
     
     # Device selection: Use PulseAudio virtual devices which route correctly
     # PulseAudio handles sample rate conversion and routing to actual hardware
@@ -101,8 +110,13 @@ def build_pipeline(mode="cpu"):
             device_name = default_input['name']
             print(f"[DEBUG] Using default input device {target_device}: {device_name}")
         
-        # Initialize wake word detector with PulseAudio default
-        wake = WakeWordDetector(device=target_device)
+        # Initialize Whisper-based wake word detector
+        # Use smaller Whisper model for speed (base or tiny is faster than small)
+        wake = WakeWordDetector(
+            device=target_device,
+            stt_model_size="base",  # Faster than "small" - good for continuous listening
+            wake_phrases=["hey quietbox", "okay quietbox", "hey assistant", "okay assistant"]
+        )
         
     except Exception as e:
         print(f"[WARNING] Device detection failed, using default: {e}")
@@ -111,12 +125,16 @@ def build_pipeline(mode="cpu"):
     
     # Use the SAME device for recorder
     rec = Recorder(device=target_device)
+    
+    # Create speech monitor for interruption
+    speech_monitor = SpeechMonitor(device=target_device, threshold=0.001)
+    
     print("Pipeline ready!")
 
-    return wake, rec, stt, llm, tts
+    return wake, rec, stt, llm, tts, speech_monitor
 
 def run_loop(mode="cpu", use_wake_word=True):
-    wake, rec, stt, llm, tts = build_pipeline(mode)
+    wake, rec, stt, llm, tts, speech_monitor = build_pipeline(mode)
     
     # Create utterances directory if it doesn't exist
     utterances_dir = "utterances"
@@ -193,9 +211,93 @@ def run_loop(mode="cpu", use_wake_word=True):
         reply = llm.respond(text)
         print(f"💬 Assistant: {reply}")
         
-        # 5) TTS
-        print("🔊 Speaking response...")
-        tts.speak(reply)
+        # 5) TTS with interruption monitoring (reusable function for both initial and follow-up)
+        while True:  # Loop to handle multiple interruptions
+            print("🔊 Speaking response... (speak to interrupt)")
+            
+            # Start monitoring for speech interruption
+            speech_monitor.start_monitoring()
+            
+            # Define interrupt callback
+            def check_interrupt():
+                return speech_monitor.check_interrupt()
+            
+            # Speak with interruption capability
+            was_interrupted = False
+            try:
+                tts.speak(reply, interrupt_check_callback=check_interrupt)
+            except KeyboardInterrupt:
+                speech_monitor.stop_monitoring()
+                raise
+            finally:
+                # Check interrupt status BEFORE stopping/resetting
+                was_interrupted = speech_monitor.check_interrupt()
+                print(f"[DEBUG] Interrupt check after TTS: {was_interrupted}")
+                speech_monitor.stop_monitoring()
+                # Don't reset yet - we need the flag for the check below
+                
+            # Check if we were interrupted
+            if not was_interrupted:
+                # Not interrupted - reset flag and exit
+                speech_monitor.reset()
+                break
+            
+            # We were interrupted - reset flag now that we've checked
+            speech_monitor.reset()
+            print("\n[INTERRUPT] Response interrupted by user - processing follow-up...")
+            # Small delay to let user finish speaking
+            import time
+            time.sleep(0.5)
+            # Play chime and go directly to recording (skip wake word)
+            play_ready_sound()
+            
+            # Brief countdown
+            print("\n" + "="*60)
+            print("🎤 FOLLOW-UP QUESTION")
+            print("="*60)
+            print("Recording starts in 1 second...")
+            time.sleep(0.3)
+            print("🎙️  SPEAK NOW!")
+            print("="*60 + "\n")
+            
+            # Record follow-up question (reuse recording logic)
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            wav_filename = os.path.join(utterances_dir, f"utterance_{timestamp}.wav")
+            wav = rec.record_to_wav(wav_filename)
+            print(f"✓ Recording stopped. Saved: {wav_filename}")
+            
+            # Check duration
+            import wave
+            duration = 0.0
+            try:
+                with wave.open(wav, 'rb') as wf:
+                    frames = wf.getnframes()
+                    duration = frames / wf.getframerate()
+                    if duration < 0.3:
+                        print(f"[SKIP] Recording too short ({duration:.2f}s), skipping")
+                        break  # Exit interruption loop, go back to wake word
+            except Exception as e:
+                print(f"[WARNING] Could not check recording duration: {e}")
+            
+            # Transcribe follow-up
+            print("🔄 Transcribing audio...")
+            followup_text = stt.transcribe(wav)
+            print(f"📝 You said: {followup_text}")
+            if not followup_text:
+                if duration >= 0.3:
+                    print("⚠️  Transcription empty - asking user to repeat...")
+                    tts.speak("Sorry, I did not catch that.")
+                break  # Exit interruption loop
+            
+            # Get LLM response to follow-up
+            print("🤔 Thinking...")
+            tts.speak("Thinking")
+            reply = llm.respond(followup_text)  # Update reply with new response
+            print(f"💬 Assistant: {reply}")
+            
+            # Loop back to TTS (will allow interruption again)
+            # This creates nested interruptions: interrupt -> follow-up -> can interrupt again
+        
         print("\n" + "="*60)
         if use_wake_word:
             print("✅ Ready for the next wake word.")
