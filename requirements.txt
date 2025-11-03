@@ -1,0 +1,12 @@
+numpy>=1.23.2,<2
+sounddevice
+openwakeword
+webrtcvad
+faster-whisper
+transformers
+torch
+pyttsx3
+pillow
+TTS
+pyjwt==2.7.0
+openai==2.6.1
