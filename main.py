@@ -11,7 +11,7 @@ from datetime import datetime
 import os
 import numpy as np
 import sounddevice as sd
-# from backends.stt_tt import STTTenstorrent
+from backends.stt_tt import STTTenstorrent
 from backends.llm_tt import ResponderTenstorrent
 
 def play_ready_sound(frequency=800, duration=0.2, volume=0.3):

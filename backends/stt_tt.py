@@ -63,3 +63,9 @@ class STTTenstorrent:
         transcription = response.json().get("text", "")
 
         return transcription
+    
+    def transcribe(self, wav_path):
+        """
+        Alias for respond() to match interface used by wakeword_whisper and main.py
+        """
+        return self.respond(wav_path)

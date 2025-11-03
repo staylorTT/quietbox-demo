@@ -10,6 +10,7 @@ import time
 import tempfile
 import wave
 import os
+from backends.stt_tt import STTTenstorrent
 
 class WakeWordDetector:
     def __init__(self, wake_phrases=None, samplerate=16000, chunk_duration=2.0, 
@@ -23,7 +24,7 @@ class WakeWordDetector:
             samplerate: Audio sample rate
             chunk_duration: How long to record before checking (seconds)
             device: Audio device index
-            stt_model_size: Whisper model size (tiny/base/small for speed, larger for accuracy)
+            stt_model_size: Ignored (kept for backward compatibility, but uses Tenstorrent STT)
         """
         self.samplerate = samplerate
         self.chunk_duration = chunk_duration
@@ -47,13 +48,12 @@ class WakeWordDetector:
         
         print(f"[DEBUG] Initializing Whisper wake word detector...")
         print(f"[DEBUG] Wake phrases: {', '.join(self.wake_phrases)}")
-        print(f"[DEBUG] Using Whisper model: {stt_model_size}")
+        print(f"[DEBUG] Using Tenstorrent STT backend")
         
-        # Load Whisper model (use smaller model for speed)
+        # Load Tenstorrent STT model
         # Import here to avoid circular dependency
-        from .stt_whisper_cpu import STTWhisperCPU
-        self.stt = STTWhisperCPU(model_size=stt_model_size)
-        print(f"[DEBUG] Whisper wake word detector ready")
+        self.stt = STTTenstorrent()
+        print(f"[DEBUG] Whisper wake word detector ready (using Tenstorrent STT)")
     
     def _record_chunk(self):
         """Record a chunk of audio"""
