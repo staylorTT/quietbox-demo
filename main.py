@@ -7,6 +7,7 @@ from backends.llm_hf_cpu import ResponderHFCPU
 from backends.tts_pyttsx3 import TTSLocal
 from backends.interruptible_tts import InterruptibleTTS
 from backends.speech_monitor import SpeechMonitor
+from ui_visualizer import get_ui_instance
 from datetime import datetime
 import os
 import numpy as np
@@ -129,12 +130,47 @@ def build_pipeline(mode="cpu"):
     # Create speech monitor for interruption
     speech_monitor = SpeechMonitor(device=target_device, threshold=0.001)
     
+    # Initialize UI (must be called from main thread)
+    ui = None
+    ui_process_events = None
+    try:
+        ui = get_ui_instance()
+        if ui:
+            # Start UI animation loop using root.after() - returns a function to call periodically
+            ui_process_events = ui.run_non_blocking()
+            if ui_process_events:
+                print("[INFO] UI visualizer started")
+            else:
+                print("[WARNING] UI visualizer created but failed to start")
+                print("[INFO] UI may not display properly")
+                ui = None
+        else:
+            print("[INFO] UI visualizer disabled (tkinter not available)")
+            print("[INFO] To enable: sudo apt-get install python3-tk")
+    except Exception as e:
+        print(f"[WARNING] Could not start UI visualizer: {e}")
+        print("[INFO] Continuing without UI...")
+        ui = None
+        ui_process_events = None
+    
     print("Pipeline ready!")
 
-    return wake, rec, stt, llm, tts, speech_monitor
+    return wake, rec, stt, llm, tts, speech_monitor, ui, ui_process_events
 
 def run_loop(mode="cpu", use_wake_word=True):
-    wake, rec, stt, llm, tts, speech_monitor = build_pipeline(mode)
+    wake, rec, stt, llm, tts, speech_monitor, ui, ui_process_events = build_pipeline(mode)
+    
+    # Set up UI callback for audio levels (if UI is available)
+    def update_ui_audio_level(audio_rms):
+        if ui:
+            ui.set_audio_level(audio_rms)
+            # Debug: print occasionally to verify callback is being called
+            if hasattr(update_ui_audio_level, 'call_count'):
+                update_ui_audio_level.call_count += 1
+            else:
+                update_ui_audio_level.call_count = 1
+            if update_ui_audio_level.call_count % 20 == 0:  # Print every 20th call
+                print(f"[DEBUG] Audio level callback: RMS={audio_rms:.5f}")
     
     # Create utterances directory if it doesn't exist
     utterances_dir = "utterances"
@@ -148,9 +184,18 @@ def run_loop(mode="cpu", use_wake_word=True):
         print("Note: Wake word detection disabled - using keyboard trigger instead.")
     
     while True:
+        # Process tkinter events periodically (non-blocking) - needed for root.after() to work
+        if ui_process_events:
+            try:
+                ui_process_events()
+            except:
+                pass  # Ignore errors if window is closed
+        
         # 1) wait for wake word OR keyboard input
+        if ui:
+            ui.set_state("listening")
         if use_wake_word:
-            wake.listen()
+            wake.listen(ui_process_events=ui_process_events)
             print("Wake word detected.")
         else:
             # Simple keyboard trigger for testing
@@ -158,9 +203,13 @@ def run_loop(mode="cpu", use_wake_word=True):
                 input("Press Enter when ready to speak your question... ")
             except KeyboardInterrupt:
                 print("\nExiting...")
+                if ui:
+                    ui.on_close()
                 break
         
         # Play chime to indicate ready to record
+        if ui:
+            ui.set_state("listening")
         play_ready_sound()
         
         # Clear timing feedback with countdown (shorter countdown)
@@ -205,9 +254,11 @@ def run_loop(mode="cpu", use_wake_word=True):
             continue
         
         # 4) LLM response
+        if ui:
+            ui.set_state("thinking")
         print("🤔 Thinking...")
         # Speak "Thinking" audibly
-        tts.speak("Thinking")
+        tts.speak("Thinking", ui_process_events=ui_process_events)
         reply = llm.respond(text)
         print(f"💬 Assistant: {reply}")
         
@@ -222,12 +273,16 @@ def run_loop(mode="cpu", use_wake_word=True):
             def check_interrupt():
                 return speech_monitor.check_interrupt()
             
-            # Speak with interruption capability
+            # Speak with interruption capability and UI updates
             was_interrupted = False
             try:
-                tts.speak(reply, interrupt_check_callback=check_interrupt)
+                if ui:
+                    ui.set_state("speaking")
+                tts.speak(reply, interrupt_check_callback=check_interrupt, ui_callback=update_ui_audio_level, ui_process_events=ui_process_events)
             except KeyboardInterrupt:
                 speech_monitor.stop_monitoring()
+                if ui:
+                    ui.set_state("idle")
                 raise
             finally:
                 # Check interrupt status BEFORE stopping/resetting
@@ -240,10 +295,14 @@ def run_loop(mode="cpu", use_wake_word=True):
             if not was_interrupted:
                 # Not interrupted - reset flag and exit
                 speech_monitor.reset()
+                if ui:
+                    ui.set_state("idle")
                 break
             
             # We were interrupted - reset flag now that we've checked
             speech_monitor.reset()
+            if ui:
+                ui.set_state("listening")
             print("\n[INTERRUPT] Response interrupted by user - processing follow-up...")
             # Small delay to let user finish speaking
             import time
@@ -286,18 +345,22 @@ def run_loop(mode="cpu", use_wake_word=True):
             if not followup_text:
                 if duration >= 0.3:
                     print("⚠️  Transcription empty - asking user to repeat...")
-                    tts.speak("Sorry, I did not catch that.")
+                    tts.speak("Sorry, I did not catch that.", ui_process_events=ui_process_events)
                 break  # Exit interruption loop
             
             # Get LLM response to follow-up
+            if ui:
+                ui.set_state("thinking")
             print("🤔 Thinking...")
-            tts.speak("Thinking")
+            tts.speak("Thinking", ui_process_events=ui_process_events)
             reply = llm.respond(followup_text)  # Update reply with new response
             print(f"💬 Assistant: {reply}")
             
             # Loop back to TTS (will allow interruption again)
             # This creates nested interruptions: interrupt -> follow-up -> can interrupt again
         
+        if ui:
+            ui.set_state("idle")
         print("\n" + "="*60)
         if use_wake_word:
             print("✅ Ready for the next wake word.")

@@ -146,7 +146,7 @@ class WakeWordDetector:
         print(f"[DEBUG] ✗ No wake phrase match found")
         return False
     
-    def listen(self):
+    def listen(self, ui_process_events=None):
         """Listen continuously until wake phrase is detected"""
         print(f"🎤 Listening for wake phrase... (say: {', '.join(self.wake_phrases[:3])}...)")
         
@@ -155,6 +155,13 @@ class WakeWordDetector:
         
         while True:
             try:
+                # Process tkinter events periodically (non-blocking) - needed for root.after() to work
+                if ui_process_events:
+                    try:
+                        ui_process_events()
+                    except:
+                        pass  # Ignore errors if window is closed
+                
                 # Record a chunk
                 audio_chunk = self._record_chunk()
                 
