@@ -11,8 +11,12 @@ from datetime import datetime
 import os
 import numpy as np
 import sounddevice as sd
+import soundfile as sf
 # from backends.stt_tt import STTTenstorrent
 from backends.llm_tt import ResponderTenstorrent
+
+import torch_xla
+from speecht5 import get_input, _generate_speech, get_model, get_vocoder, get_speaker_embeddings, initialize_tts
 
 def play_ready_sound(frequency=800, duration=0.2, volume=0.3):
     """Play a simple beep/ding sound to indicate ready state"""
@@ -135,6 +139,7 @@ def build_pipeline(mode="cpu"):
 
 def run_loop(mode="cpu", use_wake_word=True):
     wake, rec, stt, llm, tts, speech_monitor = build_pipeline(mode)
+    device, model, vocoder, speaker_embeddings = initialize_tts()
     
     # Create utterances directory if it doesn't exist
     utterances_dir = "utterances"
@@ -225,7 +230,10 @@ def run_loop(mode="cpu", use_wake_word=True):
             # Speak with interruption capability
             was_interrupted = False
             try:
-                tts.speak(reply, interrupt_check_callback=check_interrupt)
+                # tts.speak(reply, interrupt_check_callback=check_interrupt)
+                inputs = get_input(reply, device=device)
+                speech = _generate_speech(model, **inputs, speaker_embeddings=speaker_embeddings, vocoder=vocoder)
+                sf.write("speech.wav", speech.detach().cpu().numpy(), samplerate=16000)
             except KeyboardInterrupt:
                 speech_monitor.stop_monitoring()
                 raise

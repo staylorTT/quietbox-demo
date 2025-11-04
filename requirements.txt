@@ -3,10 +3,12 @@ sounddevice
 openwakeword
 webrtcvad
 faster-whisper
-transformers
-torch
+transformers==4.57.1
+torch==2.7.1
+torch-xla@https://pypi.eng.aws.tenstorrent.com/torch-xla/torch_xla-2.9.0%2Bgit1f21467-cp311-cp311-linux_x86_64.whl
 pyttsx3
 pillow
 TTS
 pyjwt==2.7.0
 openai==2.6.1
+sentencepiece
